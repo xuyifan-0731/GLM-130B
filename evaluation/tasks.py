@@ -8,10 +8,11 @@ from abc import ABC, abstractmethod
 from glob import glob
 from os.path import join, relpath
 from collections import defaultdict
+from tqdm import tqdm
 
 from SwissArmyTransformer.tokenization.icetk_glm_130B.ice_tokenizer import _IceTokenizer
 
-from generation import BaseStrategy, BeamSearchStrategy
+from generation import BaseStrategy, BeamSearchStrategy, CTGStrategy
 from .configs import BaseConfig, GenerationTaskConfig, MultiChoiceTaskConfig, LanguageModelTaskConfig
 from .model import ModelForEvaluation
 from .dataset import EvaluationDataset, GenerationTaskDataset, MultiChoiceTaskDataset, LanguageModelTaskDataset
@@ -81,7 +82,7 @@ class BaseTask(ABC):
 
                 prediction = []
                 with torch.no_grad():
-                    for _, batch in enumerate(dataloader):
+                    for _, batch in tqdm(enumerate(dataloader)):
                         prediction.append(self.predict_single_batch(batch))
 
                 prediction = gather_result(prediction, len(dataset), self.config.micro_batch_size)
@@ -170,7 +171,10 @@ class GenerationTask(BaseTask, ABC):
 
         end_tokens = [tokenizer.get_command("eop"), tokenizer.get_command("eos")]
         if self.config.sampling_strategy == "BaseStrategy":
-            self.strategy = BaseStrategy(batch_size=self.config.micro_batch_size, temperature=1.0, top_k=1,
+            self.strategy = BaseStrategy(batch_size=self.config.micro_batch_size, temperature=1.0, top_k=5,
+                                         end_tokens=end_tokens)
+        elif self.config.sampling_strategy == "NucleusStrategy":
+            self.strategy = BaseStrategy(batch_size=self.config.micro_batch_size, temperature=1.0, top_p=0.95,
                                          end_tokens=end_tokens)
         elif self.config.sampling_strategy == "BeamSearchStrategy":
             self.strategy = BeamSearchStrategy(
@@ -183,6 +187,9 @@ class GenerationTask(BaseTask, ABC):
                 min_gen_length=self.config.min_gen_length,
                 deterministic=True,  # For evaluation, we need a determined generation strategy
             )
+        elif self.config.sampling_strategy == "CTGStrategy":
+            self.strategy = CTGStrategy(model = model.model, batch_size=self.config.micro_batch_size,end_tokens=end_tokens)    
+
         else:
             raise ValueError(f"unknown strategy {self.config.sampling_strategy}")
 

@@ -1,0 +1,12 @@
+name: "PILEgen"
+type: "gen"
+module: "tasks.pile.task.PILE"
+path: "pile"
+file-pattern:
+  test: "**/100_test_tokenized.jsonl"
+
+sampling_strategy: "BeamSearchStrategy"
+num_beams: 5
+max_gen_length: 128
+use_task_mask: true
+

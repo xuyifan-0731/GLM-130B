@@ -1,10 +1,11 @@
 import torch
-
+import numpy as np
 from typing import List, Union
 
+from SwissArmyTransformer import mpu
 from SwissArmyTransformer.generation.autoregressive_sampling import update_mems, get_masks_and_position_ids_default
 from SwissArmyTransformer.mpu import vocab_parallel_cross_entropy
-
+from evaluation.utils import print_rank_0
 
 def batch_filling_sequence(
         model,
@@ -41,14 +42,19 @@ def batch_filling_sequence(
         # token[:, index: counter+1] needs forwarding.
         # forward
         tokens = tokens.reshape(batch_size * num_beams, -1)
-        mems = mems.reshape(mems.shape[0], batch_size * num_beams, mems.shape[-2], mems.shape[-1]) if mems is not None else None
-        logits, *output_per_layers = model(
+        mems = mems.reshape(mems.shape[0], batch_size * num_beams, mems.shape[-2], mems.shape[-1]) if mems is not None else None   
+        logits,*output_per_layers = model(
             tokens[:, index:],
             position_ids[..., index: counter+1],
             attention_mask[..., index: counter+1, :counter+1], # TODO memlen
             mems=mems,
             **kw_args
-        )
+        )  
+        
+        final_output = output_per_layers[-1].get("hidden_states")
+        if counter == context_length - 1:
+            final_output = final_output[0:-2,:,:]
+            context_hidden = final_output.float().transpose(0,1)
         mem_kv = [o['mem_kv'] for o in output_per_layers]
         mems = update_mems(mem_kv, mems, max_memory_length=max_memory_length)
         if counter == context_length - 1:
@@ -57,13 +63,14 @@ def batch_filling_sequence(
             logits = logits[:, -1]
         counter += 1
         index = counter
-        # if torch.distributed.get_rank() == 0:
-        #     print(f"counter: {counter}: logits: {logits.float().abs().mean()}")
         # sampling
         logits = logits.reshape(batch_size, num_beams, -1)
         tokens = tokens.reshape(batch_size, num_beams, -1)
         mems = mems.reshape(mems.shape[0], batch_size, num_beams, mems.shape[-2], mems.shape[-1])
-        tokens, mems = strategy.forward(logits, tokens, mems)
+        if type(strategy).__name__ == "CTGStrategy":       
+            tokens, mems, context_hidden= strategy.forward(logits, tokens, mems,index,counter,position_ids,attention_mask,context_hidden)
+        else:
+            tokens, mems = strategy.forward(logits, tokens, mems)
         if len(tokens.shape) == 3 and num_beams == 1:
             num_beams = tokens.shape[1]
             position_ids = position_ids.unsqueeze(1).expand(batch_size, num_beams, -1).reshape(batch_size * num_beams, -1)
@@ -72,8 +79,8 @@ def batch_filling_sequence(
                 batch_size * num_beams, *attention_mask_shape)
         if strategy.is_done:
             break
+        # break
     return strategy.finalize(tokens, mems)
-
 
 class ModelForEvaluation(torch.nn.Module):
     def __init__(self, model):
@@ -195,4 +202,5 @@ class ModelForEvaluation(torch.nn.Module):
 
         self.model.transformer.parallel_output = original_parallel_output
 
+        # return list(zip(loss.tolist(), loss_masks.sum(dim=-1).tolist()))
         return loss.tolist()

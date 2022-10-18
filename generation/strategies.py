@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from SwissArmyTransformer.generation.sampling_strategies.base_strategy import top_k_logits
+from SwissArmyTransformer import mpu
+from SwissArmyTransformer.generation.sampling_strategies.base_strategy import top_k_logits   
 
 class BaseStrategy:
     def __init__(self, batch_size, invalid_slices=[], temperature=1., top_k=200, eps=1e-4, top_p=0.0, end_tokens=None):
@@ -39,12 +40,89 @@ class BaseStrategy:
                 pred[i] = -1
             elif pred[i].item() in self.end_tokens:
                 self._is_done[i] = True
+        
         tokens = torch.cat((tokens, pred.view(tokens.shape[:-1] + (1,))), dim=-1)
         return tokens, mems
 
     def finalize(self, tokens, mems):
         self._is_done = np.zeros(self.batch_size, dtype=np.bool)
         return tokens, mems
+
+
+class CTGStrategy(BaseStrategy):
+    def __init__(self, model,batch_size, invalid_slices=[], temperature=1., top_k=5, eps=1e-4, top_p=0.0, end_tokens=None):
+        super().__init__(batch_size, invalid_slices=[], temperature=1., top_k=5, eps=1e-4, top_p=0.0, end_tokens=None)
+        self.model = model
+        self.alpha = 0.6 # same definition as simCTG's Contrastive Search        
+        self.final_output = []
+        self.beam_width = 5
+        if end_tokens is None:
+            end_tokens = []
+        self.end_tokens = end_tokens
+
+    def forward(self, logits, tokens, mems,index,counter,position_ids,attention_mask,context_hidden,temperature=None,**kw_args):
+        logits = logits.view(-1, logits.size(-1))
+        batch_size = tokens.shape[0]
+        if temperature is None:
+            temperature = self.temperature
+        logits = logits / temperature
+        for invalid_slice in self.invalid_slices:
+            logits[..., invalid_slice] = -65504
+        
+        logits = top_k_logits(logits, self.beam_width, self.top_p)  
+        probs = F.softmax(logits.float(), dim=-1)  # float is essetial, due to a bug in Pytorch
+        pred_next = torch.multinomial(probs, num_samples=self.beam_width)
+        top_k_probs = torch.gather(probs, dim=1, index=pred_next)
+        pred_next = pred_next.reshape(batch_size * self.beam_width,-1)
+        
+        position_ids = position_ids.unsqueeze(1).expand(batch_size, 1, -1).reshape(batch_size, -1)
+        position_ids = torch.repeat_interleave(position_ids,self.beam_width,dim=0)
+        attention_mask_shape = attention_mask.shape[-3:]
+        attention_mask = attention_mask.unsqueeze(1).expand(batch_size, 1, -1, -1, -1).reshape(
+                batch_size, *attention_mask_shape)
+        attention_mask = torch.repeat_interleave(attention_mask,self.beam_width,dim=0)
+        tmp_mems = mems.reshape(mems.shape[0], batch_size, mems.shape[-2], mems.shape[-1]) if mems is not None else None
+        tmp_mems = torch.repeat_interleave(tmp_mems,self.beam_width,dim=1) if tmp_mems is not None else None
+        _,*output_per_layers = self.model(
+            pred_next,
+            position_ids[..., index: counter+1],
+            attention_mask[..., index: counter+1, :counter+1], # TODO memlen
+            mems=tmp_mems,
+            **kw_args
+        )
+        next_hidden = output_per_layers[-1].get("hidden_states").transpose(0,1) # bsz*1*embed dim
+        selected_idx = self.ranking_fast(torch.repeat_interleave(context_hidden.float(),self.beam_width,dim=0),next_hidden.float(),top_k_probs.float(),self.alpha,self.beam_width)
+        selected_token = pred_next[selected_idx]  
+        
+        for i in range(self.batch_size):
+            if i >= batch_size:
+                self._is_done[i] = True
+            elif self._is_done[i]:
+                selected_token[i] = -1
+            elif selected_token[i].item() in self.end_tokens:
+                self._is_done[i] = True
+
+        tokens = torch.cat((tokens, selected_token.unsqueeze(2)), dim=-1)
+        context_hidden = torch.cat((context_hidden,next_hidden[selected_idx]),1)
+        return tokens, mems, context_hidden
+
+    def ranking_fast(self,context_hidden, next_hidden, next_top_k_probs, alpha, beam_width):
+        '''
+            context_hidden: bsz*beam x seqlen x embed_dim
+            next_hidden: bsz*beam x 1 x embed_dim
+            next_top_k_probs: bsz x beam
+        '''   
+        norm_context_hidden = context_hidden / context_hidden.norm(dim=2, keepdim=True)
+        norm_next_hidden = next_hidden / next_hidden.norm(dim=2, keepdim=True)
+        cosine_matrix = torch.matmul(norm_context_hidden, norm_next_hidden.transpose(1,2)).squeeze(-1)    # [B*K, S]
+        scores, _ = torch.max(cosine_matrix, dim=-1)    # [B*K]
+        next_top_k_probs = next_top_k_probs.view(-1)    # [B*K]
+        scores = (1.0 - alpha) * next_top_k_probs - alpha * scores 
+        scores = torch.stack(torch.split(scores, beam_width))    # [B, K]
+        selected_idx = scores.max(dim=-1)[1]
+        return selected_idx
+
+
 
 
 class BeamSearchStrategy:

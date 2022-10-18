@@ -8,10 +8,10 @@ from typing import List, Tuple
 
 from SwissArmyTransformer import mpu
 from evaluation.model import batch_filling_sequence
-from generation import BeamSearchStrategy, BaseStrategy
+from generation import BeamSearchStrategy, BaseStrategy,CTGStrategy
 from SwissArmyTransformer.generation.utils import timed_name, generate_continually
 from initialize import initialize, initialize_model_and_tokenizer
-
+from evaluation.utils import print_rank_0
 
 def add_generation_specific_args(parser):
     parser.add_argument("--sampling-strategy", type=str, default="BaseStrategy", help="Type of sampling strategy.")
@@ -101,6 +101,7 @@ def fill_blanks(raw_text: str, model, tokenizer, strategy) -> Tuple[List[str], L
             [seq + [tokenizer.get_command("sop")]],
             device=args.device,
         )
+        # input_seq = torch.repeat_interleave(input_seq,4,dim=0)
         output, _ = batch_filling_sequence(
             model,
             input_seq,
@@ -148,7 +149,6 @@ def fill_blanks(raw_text: str, model, tokenizer, strategy) -> Tuple[List[str], L
             output = output[:-1]
         answers_with_style[i] += tokenizer.detokenize(output[last_pos[i] :])
         answers[i] = tokenizer.detokenize(output)
-
     return answers, answers_with_style, blanks
 
 
@@ -158,7 +158,7 @@ def main(args):
     end_tokens = [tokenizer.get_command("eop"), tokenizer.get_command("eos")]
 
     if args.sampling_strategy == "BaseStrategy":
-        strategy = BaseStrategy(batch_size=1, temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
+        strategy = BaseStrategy(batch_size=5, temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
                                 end_tokens=end_tokens)
     elif args.sampling_strategy == "BeamSearchStrategy":
         strategy = BeamSearchStrategy(
@@ -170,6 +170,9 @@ def main(args):
             no_repeat_ngram_size=args.no_repeat_ngram_size,
             min_gen_length=args.min_gen_length,
         )
+    elif args.sampling_strategy == "CTGStrategy":
+        strategy = CTGStrategy(model = model, batch_size=1, temperature=args.temperature, top_k=args.top_k, top_p=args.top_p,
+                                end_tokens=end_tokens)    
     else:
         raise ValueError(f"unknown strategy {args.sampling_strategy}")
 
