@@ -1,0 +1,11 @@
+name: "bart-score-realsumm"
+type: "lm"
+module: "tasks.bart-score.task.BartscoreTask"
+path: "bart-score/data"
+file-pattern:
+  test: "**/Newsromm.jsonl"
+generation-length: 128
+max_gen_length: 128
+max_seq_length: 2048
+use_task_mask: true
+
