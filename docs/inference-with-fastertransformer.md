@@ -4,7 +4,60 @@
 
 We adapted the GLM-130B based on Fastertransformer for fast inference, with details in [benchmark](#benchmark) section.
 
-## Setup
+## Download the Model
+
+See [Get Model](/README.md#environment-setup).
+
+## Recommend: Run With Docker
+
+Use Docker to quickly build a Flask API application for GLM-130B.
+
+### Requirements
+
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+
+### Build Container Image
+
+```bash
+git clone https://github.com/THUDM/FasterTransformer.git
+cd FasterTransformer
+bash docker/build.sh
+```
+
+### Run API With Checkpoints
+
+Set MPSIZE to the number of gpus needed for the checkpoints, and DATA_TYPE to checkpoints precision. The checkpoint we distribute is in 8-way tensor parallel in FP16 precision, a conversion scripts is also provided if you need to change the tensor parallel dimension and the weight precision.
+
+```bash
+# Convert the checkpoint to MP=4, DATA_TYPE=INT4
+python tools/convert_tp.py \
+    --input-folder <SRC_CKPT_PATH>  \
+    --output-folder <DST_CKPT_PATH> \
+    --target-tp 8 \
+    --quantization-bit-width 4 \
+# Run API
+docker run -it --rm --gpus all --shm-size=10g -p 5000:5000 \
+           -v <DST_CKPT_PATH>/49300:/checkpoints:ro \
+           -e MPSIZE=4 -e DATA_TYPE=int4 \
+           ftglm:latest
+```
+
+### Test
+
+#### Benchmark
+
+```bash
+python3 examples/pytorch/glm/glm_server_test.py
+```
+
+#### Web Demo
+
+```bash
+pip install gradio
+python3 examples/pytorch/glm/glm_server_frontend_test.py
+```
+
+## Manual Configuration
 
 ### Requirements
 
@@ -14,7 +67,16 @@ We adapted the GLM-130B based on Fastertransformer for fast inference, with deta
 - Python 3 is recommended because some features are not supported in python 2
 - PyTorch: Verify on 1.10.1, >= 1.8.0 should work.
 
-All the packages can be installed using conda, we also recommend use nvcr image like `nvcr.io/nvidia/pytorch:21.09-py3`.
+### Setup Using Docker
+
+```bash
+docker run -it --rm --gpus all nvcr.io/nvidia/pytorch:22.09-py3 /bin/bash
+conda install -y pybind11
+```
+
+### Setup Using Conda
+
+As another way, all the packages can be installed using conda.
 
 > Some of our current [structure](https://github.com/THUDM/FasterTransformer/blob/main/src/fastertransformer/th_op/glm/GlmOp.h#L30) requires that `g++` and `libtorch` produce the same results, so a pre-compiled `libtorch` may only work with `g++-7` or `g++-9`. And although GLM-130B itself does not rely on openmpi, FasterTransformer requires it during the build process. We are working on these issues.
 
@@ -44,7 +106,6 @@ Get the code and install all dependencies:
 git clone https://github.com/THUDM/FasterTransformer.git
 mkdir -p FasterTransformer/build
 cd FasterTransformer/build
-git submodule init && git submodule update
 pip3 install icetk transformers
 ```
 
@@ -55,10 +116,6 @@ cmake -DSM=80 -DCMAKE_BUILD_TYPE=Release -DBUILD_PYT=ON -DBUILD_MULTI_GPU=ON ..
 make -j
 ```
 
-### Download the Model
-
-See [Get Model](/README.md#environment-setup).
-
 ### Run GLM-130B
 
 Generate the `gemm_config.in` file.
@@ -68,10 +125,10 @@ Generate the `gemm_config.in` file.
 ./bin/gpt_gemm 1 1 128 96 128 49152 150528 1 8
 ```
 
-Running GLM_130B in Pytorch.
+Running GLM_130B in Pytorch and Flask.
 
 ```bash
-bash ../examples/pytorch/glm/benchmark-generation.sh
+bash ../examples/pytorch/glm/glm-server.sh
 ```
 
 You need to check and edit this file to set arguments such as `CHECKPOINT_PATH`.
