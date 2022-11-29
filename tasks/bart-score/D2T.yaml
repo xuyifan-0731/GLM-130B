@@ -1,9 +1,11 @@
-name: "bart-score-realsumm"
+name: "bart-score-D2T"
 type: "lm"
-module: "tasks.bart-score.task.BartscoreTask"
+module: "tasks.bart-score.task.BartscoreD2TTask"
 path: "bart-score/data/"
 file-pattern:
-  test: "**/SummEval.jsonl"
+  BAGEL: "**/BAGEL.jsonl"
+  SFHOT: "**/SFHOT.jsonl"
+  SFRES: "**/SFRES.jsonl"
 generation-length: 128
 max_gen_length: 128
 max_seq_length: 2048

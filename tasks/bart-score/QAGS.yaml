@@ -1,11 +1,12 @@
-name: "bart-score-realsumm"
+name: "bart-score-QAGS"
 type: "lm"
 module: "tasks.bart-score.task.BartscoreTask"
 path: "bart-score/data/"
 file-pattern:
-  test: "**/REALSumm.jsonl"
+  QAGS_CNN: "**/QAGS_CNN.jsonl"
+  QAGS_XSUM: "**/QAGS_XSUM.jsonl"
 generation-length: 128
 max_gen_length: 128
 max_seq_length: 2048
 use_task_mask: true
-micro-batch-size: 16
+micro-batch-size: 8

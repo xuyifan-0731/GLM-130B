@@ -196,28 +196,3 @@ class ModelForEvaluation(torch.nn.Module):
         self.model.transformer.parallel_output = original_parallel_output
 
         return loss.tolist()
-
-    def calculate_bart_score(self, batch) -> List[float]:
-        tokens, position_ids, attention_mask = self.process_data(batch)
-        targets, loss_masks = (
-            batch["targets"].to(device=torch.cuda.current_device()).long(),
-            batch["loss_masks"].to(device=torch.cuda.current_device()).long(),
-        )
-
-        original_parallel_output = self.model.transformer.parallel_output
-        self.model.transformer.parallel_output = False
-        self.model.eval()
-
-        with torch.no_grad():
-            logits, *output_per_layers = self.model(tokens, position_ids, attention_mask, log_attention_weights=None)
-
-            tgt_len = sum(loss_masks.squeeze()).item()
-            loss_fct = torch.nn.NLLLoss(reduction="none")
-            lsm = torch.nn.LogSoftmax(dim=1)
-            loss = loss_fct(lsm(logits.float().squeeze()), targets[0].view(-1))
-            loss = loss.view(targets.shape[0], -1) * loss_masks
-            loss = loss.sum(dim=1) / tgt_len
-            bartscore = [-x.item() for x in loss]
-
-        self.model.transformer.parallel_output = original_parallel_output
-        return bartscore
