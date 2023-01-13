@@ -6,7 +6,7 @@ import re
 from functools import partial
 from typing import List, Tuple
 
-from SwissArmyTransformer import mpu
+from SwissArmyTransformer import mpu, get_args
 from evaluation.model import batch_filling_sequence
 from generation import BeamSearchStrategy, BaseStrategy
 from SwissArmyTransformer.generation.utils import timed_name, generate_continually
@@ -30,7 +30,7 @@ def isEnglish(s):
         return True
 
 
-def get_masks_and_position_ids(seq, mask_position, max_gen_length, gmask=False):
+def get_masks_and_position_ids(seq, mask_position, max_gen_length, gmask=False, position_encoding_2d=False):
     context_length = seq.shape[1]
     tokens = torch.nn.functional.pad(seq, (0, max_gen_length), mode="constant", value=-1)
     attention_mask = torch.ones((1, tokens.shape[-1], tokens.shape[-1]), device=tokens.device)
@@ -39,16 +39,27 @@ def get_masks_and_position_ids(seq, mask_position, max_gen_length, gmask=False):
     attention_mask.unsqueeze_(1)
     attention_mask = (attention_mask < 0.5).bool()
 
-    position_ids = torch.arange(tokens.shape[-1], dtype=torch.long, device=tokens.device)
-    if not gmask:
+    if position_encoding_2d:
+        position_ids = torch.arange(tokens.shape[-1], dtype=torch.long, device=tokens.device)
         position_ids[context_length - 1 :] = mask_position
+        block_position_ids = torch.cat(
+            (
+                torch.zeros(context_length - 2, dtype=torch.long, device=tokens.device),
+                torch.arange(tokens.shape[-1] - (context_length - 2), dtype=torch.long, device=tokens.device),
+            )
+        )
+        position_ids = torch.vstack((position_ids, block_position_ids))
+    else:
+        position_ids = torch.arange(tokens.shape[-1], dtype=torch.long, device=tokens.device)
+        if not gmask:
+            position_ids[context_length - 1 :] = mask_position
 
     position_ids = position_ids.unsqueeze(0)
 
     return tokens, attention_mask, position_ids
 
 
-def fill_blanks(raw_text: str, model, tokenizer, strategy) -> Tuple[List[str], List[str], List[List[str]]]:
+def fill_blanks(raw_text: str, model, tokenizer, strategy, args) -> Tuple[List[str], List[str], List[List[str]]]:
     # add MASK
     generation_mask = "[gMASK]"
     if "[MASK]" in raw_text:
@@ -113,8 +124,9 @@ def fill_blanks(raw_text: str, model, tokenizer, strategy) -> Tuple[List[str], L
             get_masks_and_position_ids=partial(
                 get_masks_and_position_ids,
                 mask_position=mask_position,
-                max_gen_length=args.out_seq_length - input_seq.shape[-1],
+                max_gen_length=args.out_seq_length,
                 gmask=use_gmask,
+                position_encoding_2d=args.position_encoding_2d,
             ),
         )
         if isinstance(output, torch.Tensor):  # different strategies
@@ -156,7 +168,9 @@ def fill_blanks(raw_text: str, model, tokenizer, strategy) -> Tuple[List[str], L
     return answers, answers_with_style, blanks
 
 
-def main(args):
+def main():
+    args = initialize(extra_args_provider=add_generation_specific_args)
+
     model, tokenizer = initialize_model_and_tokenizer(args)
 
     end_tokens = [tokenizer.get_command("eop"), tokenizer.get_command("eos")]
@@ -182,7 +196,7 @@ def main(args):
         if args.with_id:
             query_id, raw_text = raw_text.split("\t")
 
-        answers, answers_with_style, blanks = fill_blanks(raw_text, model, tokenizer, strategy)
+        answers, answers_with_style, blanks = fill_blanks(raw_text, model, tokenizer, strategy, args)
 
         # save
         if args.with_id:
@@ -209,7 +223,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    args = initialize(extra_args_provider=add_generation_specific_args)
-
     with torch.no_grad():
-        main(args)
+        main()

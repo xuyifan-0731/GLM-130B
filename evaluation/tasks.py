@@ -1,5 +1,6 @@
-import torch
+import os
 import time
+import torch
 import numpy as np
 import torch.distributed as dist
 
@@ -41,6 +42,10 @@ class BaseTask(ABC):
 
         self.file_groups = self.get_file_groups()
         self.verbose = dist.get_rank() == 0
+        self.save_prediction = config.save_prediction
+
+    def save_prediction_to_file(self, file, prediction, data):
+        pass
 
     def get_file_groups(self):
         pattern_group = {}
@@ -87,6 +92,8 @@ class BaseTask(ABC):
                 prediction = gather_result(prediction, len(dataset), self.config.micro_batch_size)
                 result_dict = {key: metric(prediction, dataset.data) for key, metric in self.metrics.items()}
                 result_dict_group[file] = (result_dict, len(dataset))
+                if torch.distributed.get_rank() == 0 and self.save_prediction:
+                    self.save_prediction_to_file(file, prediction, dataset.data)
 
                 if self.verbose:
                     self.report_single_metrics(file, result_dict)
@@ -163,15 +170,27 @@ class GenerationTask(BaseTask, ABC):
         return GenerationTaskConfig
 
     def build_dataset(self, relative_path):
-        return GenerationTaskDataset(join(self.config.path, relative_path), self.config)
+        return GenerationTaskDataset(join(self.config.path, relative_path), self.model, self.config)
+
+    def save_prediction_to_file(self, file, prediction, data):
+        filename = os.path.join("outputs", self.config.name, f"{file}.predict")
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        with open(filename, "w") as file:
+            for item in prediction:
+                file.write(self.tokenizer.detokenize(item) + "\n")
 
     def __init__(self, model: ModelForEvaluation, tokenizer: _IceTokenizer, config: GenerationTaskConfig):
         super(GenerationTask, self).__init__(model, tokenizer, config)
 
         end_tokens = [tokenizer.get_command("eop"), tokenizer.get_command("eos")]
+        if self.config.end_tokens:
+            for token in self.config.end_tokens:
+                end_tokens.append(self.tokenizer.tokenize(token)[-1])
+            print_rank_0(f"End tokens {end_tokens}")
         if self.config.sampling_strategy == "BaseStrategy":
-            self.strategy = BaseStrategy(batch_size=self.config.micro_batch_size, temperature=1.0, top_k=1,
-                                         end_tokens=end_tokens)
+            self.strategy = BaseStrategy(
+                batch_size=self.config.micro_batch_size, temperature=1.0, top_k=1, end_tokens=end_tokens
+            )
         elif self.config.sampling_strategy == "BeamSearchStrategy":
             self.strategy = BeamSearchStrategy(
                 self.config.micro_batch_size,
@@ -199,7 +218,7 @@ class MultiChoiceTask(BaseTask, ABC):
         return MultiChoiceTaskConfig
 
     def build_dataset(self, relative_path):
-        return MultiChoiceTaskDataset(join(self.config.path, relative_path), self.config)
+        return MultiChoiceTaskDataset(join(self.config.path, relative_path), self.model, self.config)
 
     def predict_single_batch(self, batch) -> List[int]:
         log_probs = self.model.cond_log_prob(batch)
@@ -214,7 +233,7 @@ class LanguageModelTask(BaseTask, ABC):
         return LanguageModelTaskConfig
 
     def build_dataset(self, relative_path):
-        return LanguageModelTaskDataset(join(self.config.path, relative_path), self.config)
+        return LanguageModelTaskDataset(join(self.config.path, relative_path), self.model, self.config)
 
     def predict_single_batch(self, batch) -> List[float]:
         return self.model.calculate_loss(batch)

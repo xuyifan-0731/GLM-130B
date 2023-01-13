@@ -19,7 +19,7 @@ class CrowsPairTask(MultiChoiceTask, ABC):
     config: MultiChoiceTaskConfig
 
     def build_dataset(self, relative_path):
-        return CrowsPairDataset(join(self.config.path, relative_path), self.config)
+        return CrowsPairDataset(join(self.config.path, relative_path), self.model, self.config)
 
     def predict_single_batch(self, batch) -> List[int]:
         log_probs = self.model.cond_log_prob(batch)
@@ -62,17 +62,17 @@ class CrowsPairTask(MultiChoiceTask, ABC):
             for value1 in result.items():
                 value1 = value1[1]
                 for key, value in value1.items():
-                    print_rank_0("category:{cat}        score:{score}".format(cat=key, score=round(value * 100,2)))
+                    print_rank_0("category:{cat}        score:{score}".format(cat=key, score=round(value * 100, 2)))
 
 
 class CrowsPairDataset(MultiChoiceTaskDataset):
 
     config: MultiChoiceTaskConfig
 
-    def __init__(self, path, config: MultiChoiceTaskConfig):
+    def __init__(self, path, model, config: MultiChoiceTaskConfig):
         self.is_single_token = True  # set to False later in process_single_item func
         self.eval_data = []
-        super().__init__(path, config)
+        super().__init__(path, model, config)
 
     def process_single_item(self, item):
         text, choices, label = (
